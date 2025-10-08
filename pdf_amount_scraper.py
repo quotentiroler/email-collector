@@ -111,7 +111,7 @@ def extract_amount_from_pdf_with_openai(pdf_path: str, client, currency: str = "
     # Ask OpenAI to extract the total amount
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[
                 {
                     "role": "user",
