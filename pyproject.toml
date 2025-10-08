@@ -1,0 +1,28 @@
+[project]
+name = "email-backup"
+version = "0.1.0"
+description = "Tools for collecting expense emails and extracting structured data"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Maximilian Nussbaumer" }
+]
+dependencies = [
+  "imapclient",
+  "html2text",
+  "python-dotenv",
+  "google-auth>=2.41.0",
+  "google-auth-oauthlib>=1.2.0",
+  "msal>=1.34.0",
+  "pdfplumber>=0.11.0",
+  "PyPDF2>=3.0.0",
+  "openai>=2.2.0",
+  "anthropic>=0.69.0"
+]
+
+[project.scripts]
+expense-launcher = "expense_launcher:main"
+collect-expenses = "collect_expenses:main"
+
+[tool.uv]
+managed = true

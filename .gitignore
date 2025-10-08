@@ -1,1 +1,39 @@
+# Virtual Environment
 /.venv
+venv/
+env/
+ENV/
+
+# Environment variables (contains API keys - NEVER commit!)
+.env
+client_secret*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Email exports
+mail_export/
+expenses_*/
+conversation_*.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
