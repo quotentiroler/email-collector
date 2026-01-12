@@ -1,5 +1,6 @@
 import os
 from imapclient import IMAPClient
+from imapclient.exceptions import LoginError
 import sys
 import re
 from email import message_from_bytes
@@ -8,8 +9,75 @@ from email.utils import parsedate_to_datetime
 import html2text
 from datetime import datetime
 import hashlib
+import getpass
+import socket
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Import OAuth helpers if available
+try:
+    from oauth_client import start_oauth_flow as start_google_oauth_flow
+    GOOGLE_OAUTH_AVAILABLE = True
+except ImportError:
+    start_google_oauth_flow = None
+    GOOGLE_OAUTH_AVAILABLE = False
+
+try:
+    from oauth_microsoft import start_microsoft_oauth_flow
+    MICROSOFT_OAUTH_AVAILABLE = True
+except ImportError:
+    start_microsoft_oauth_flow = None
+    MICROSOFT_OAUTH_AVAILABLE = False
+
+OAUTH_AVAILABLE = GOOGLE_OAUTH_AVAILABLE or MICROSOFT_OAUTH_AVAILABLE
+
+
+def autodetect_imap_server(email: str):
+    """Return (server, port) tuple based on email domain if possible."""
+    if not email or "@" not in email:
+        return None, None
+
+    domain = email.split("@", 1)[1].lower()
+
+    known_providers = {
+        "gmail.com": ("imap.gmail.com", 993),
+        "googlemail.com": ("imap.gmail.com", 993),
+        "outlook.com": ("imap-mail.outlook.com", 993),
+        "hotmail.com": ("imap-mail.outlook.com", 993),
+        "live.com": ("imap-mail.outlook.com", 993),
+        "office365.com": ("outlook.office365.com", 993),
+        "me.com": ("imap.mail.me.com", 993),
+        "mac.com": ("imap.mail.me.com", 993),
+        "icloud.com": ("imap.mail.me.com", 993),
+        "yahoo.com": ("imap.mail.yahoo.com", 993),
+        "yahoo.de": ("imap.mail.yahoo.com", 993),
+        "gmx.de": ("imap.gmx.net", 993),
+        "gmx.net": ("imap.gmx.net", 993),
+        "web.de": ("imap.web.de", 993),
+        "t-online.de": ("secureimap.t-online.de", 993),
+    }
+
+    if domain in known_providers:
+        return known_providers[domain]
+
+    # Fallback guess: imap.<domain>
+    return f"imap.{domain}", 993
+
 
 def prompt_imap_credentials():
+    """Prompt for IMAP credentials with OAuth or password authentication."""
+    
+    # Check for env variables first
+    env_server = os.getenv("IMAP_SERVER", "").strip()
+    env_port = os.getenv("IMAP_PORT", "").strip()
+    env_username = os.getenv("IMAP_USERNAME", "").strip()
+    
+    username = None
+    imap_server = None
+    imap_port = 993
+
     # Check for server[:port] as first argument
     if len(sys.argv) > 1:
         server_arg = sys.argv[1]
@@ -21,14 +89,139 @@ def prompt_imap_credentials():
             imap_server = server_arg
             imap_port = 993
         print(f"Using server: {imap_server}, port: {imap_port}")
-    else:
-        imap_server = input("IMAP server (e.g. xmail.mwn.de): ").strip()
-        port_str = input("IMAP port (default 993): ").strip()
-        imap_port = int(port_str) if port_str else 993
-    username = input("Username: ").strip()
-    import getpass
-    password = getpass.getpass("Password: ")
-    return imap_server, imap_port, username, password
+    elif env_server:
+        # Use env variables
+        imap_server = env_server
+        imap_port = int(env_port) if env_port else 993
+        username = env_username if env_username else None
+        print(f"Using server from .env: {imap_server}, port: {imap_port}")
+        if username:
+            print(f"Using username from .env: {username}")
+
+    auth_choice = input("Authentication method (1=IMAP password, 2=OAuth, default 1): ").strip()
+    auth_method = 'oauth' if auth_choice == '2' else 'password'
+
+    if auth_method == 'oauth':
+        if not username:
+            username = input("Email for OAuth: ").strip()
+        if not username:
+            print("Email is required for OAuth authentication.")
+            raise SystemExit(1)
+
+        if imap_server is None:
+            detected_server, detected_port = autodetect_imap_server(username)
+            if detected_server:
+                imap_server = detected_server
+                imap_port = detected_port or 993
+                print(f"Auto-detected IMAP server: {imap_server} (port {imap_port})")
+            else:
+                imap_server = input("IMAP server (could not auto-detect): ").strip()
+                while not imap_server:
+                    imap_server = input("IMAP server: ").strip()
+                port_str = input(f"IMAP port (default {imap_port}): ").strip()
+                imap_port = int(port_str) if port_str else imap_port
+
+        if not OAUTH_AVAILABLE:
+            print("OAuth support requires oauth libraries.")
+            print(" For Gmail: install google-auth, google-auth-oauthlib")
+            print(" For Microsoft: install msal")
+            raise SystemExit(1)
+
+        # Determine which OAuth provider to use based on email domain
+        domain = username.split("@", 1)[1].lower() if "@" in username else ""
+        use_microsoft = domain in ("outlook.com", "hotmail.com", "live.com", "office365.com") or "outlook" in domain.lower()
+
+        oauth_function = None
+        if use_microsoft and MICROSOFT_OAUTH_AVAILABLE:
+            oauth_function = start_microsoft_oauth_flow
+            print("Using Microsoft OAuth for authentication...")
+        elif GOOGLE_OAUTH_AVAILABLE:
+            oauth_function = start_google_oauth_flow
+            print("Using Google OAuth for authentication...")
+        elif MICROSOFT_OAUTH_AVAILABLE:
+            oauth_function = start_microsoft_oauth_flow
+            print("Using Microsoft OAuth for authentication...")
+
+        if not oauth_function:
+            print(f"No OAuth provider available for {username}.")
+            print("Install google-auth-oauthlib for Gmail or msal for Microsoft accounts.")
+            raise SystemExit(1)
+
+        try:
+            oauth_result = oauth_function(username, imap_server=imap_server, imap_port=imap_port)
+        except NotImplementedError as e:
+            print(str(e))
+            raise SystemExit(1)
+        except Exception as e:
+            print(f"OAuth flow failed: {e}")
+            raise SystemExit(1)
+
+        if not isinstance(oauth_result, dict):
+            print("OAuth flow did not return connection details.")
+            raise SystemExit(1)
+
+        imap_server = oauth_result.get('imap_server', imap_server)
+        imap_port = oauth_result.get('imap_port', imap_port)
+        access_token = oauth_result.get('access_token')
+
+        if not access_token:
+            print("OAuth flow did not return an access token.")
+            raise SystemExit(1)
+
+        return auth_method, imap_server, imap_port, username, access_token
+
+    # Password-based flow
+    if imap_server is None:
+        server_input = input("IMAP server (or enter email for auto-detection): ").strip()
+
+        if server_input and "@" in server_input:
+            username = server_input
+            detected_server, detected_port = autodetect_imap_server(username)
+            if detected_server:
+                imap_server = detected_server
+                imap_port = detected_port or 993
+                print(f"Auto-detected IMAP server: {imap_server} (port {imap_port})")
+            else:
+                print("Could not auto-detect IMAP server. Please enter it manually.")
+
+        if imap_server is None:
+            imap_server = server_input if server_input and "@" not in server_input else ""
+            while not imap_server:
+                imap_server = input("IMAP server: ").strip()
+
+        port_str = input(f"IMAP port (default {imap_port}): ").strip()
+        imap_port = int(port_str) if port_str else imap_port
+
+    if not username:
+        username = input("Email: ").strip()
+
+    password = None
+
+    if username.lower().endswith(("@gmail.com", "@googlemail.com")):
+        env_app_password = os.getenv("GOOGLE_APP_PASSWORD", "").strip()
+        if env_app_password:
+            print("Using Google App Password from environment (GOOGLE_APP_PASSWORD).")
+            password = env_app_password
+        else:
+            print(
+                "Google accounts with 2-step verification require an App Password. "
+                "Create one at https://myaccount.google.com/apppasswords"
+            )
+    elif username.lower().endswith(("@outlook.com", "@hotmail.com", "@live.com")) or "outlook" in username.lower():
+        env_app_password = os.getenv("MICROSOFT_APP_PASSWORD", "").strip()
+        if env_app_password:
+            print("Using Microsoft App Password from environment (MICROSOFT_APP_PASSWORD).")
+            password = env_app_password
+        else:
+            print(
+                "Microsoft accounts with 2-step verification require an App Password. "
+                "Create one at https://account.live.com/proofs/manage"
+            )
+
+    if not password:
+        password = getpass.getpass("Password: ")
+
+    return auth_method, imap_server, imap_port, username, password
 
 def decode_mime_header(header_value):
     """Decode MIME encoded email headers."""
@@ -185,9 +378,14 @@ def get_text_from_email(msg):
     # Strip quoted/replied content to get only the new message
     return strip_quoted_text(full_text)
 
-def search_emails_by_sender(server, sender_email, folders=None):
+def search_emails_by_sender(server, sender_email, folders=None, is_gmail=False):
     """Search for all emails from or to a specific sender across folders."""
     messages = {}  # Use dict to deduplicate by hash
+    
+    # Folders to skip (drafts shouldn't be included in conversations)
+    skip_folders = {'[Gmail]/Drafts', 'Drafts', '[Gmail]/Spam', 'Spam', 'Junk', '[Gmail]/Trash', 'Trash'}
+    # German folder names
+    skip_folders.update({'Entwürfe', 'Papierkorb'})
     
     if folders is None:
         # Get all folders
@@ -195,6 +393,11 @@ def search_emails_by_sender(server, sender_email, folders=None):
         folders = [folder_name for flags, delimiter, folder_name in folder_list]
     
     for folder in folders:
+        # Skip draft and spam folders
+        if folder in skip_folders or 'draft' in folder.lower() or 'entwürf' in folder.lower():
+            print(f"Skipping folder: {folder}")
+            continue
+        
         try:
             server.select_folder(folder, readonly=True)
             print(f"Searching in folder: {folder}")
@@ -210,11 +413,33 @@ def search_emails_by_sender(server, sender_email, folders=None):
             
             if all_uids:
                 print(f"  Found {len(all_uids)} messages")
-                fetch_results = server.fetch(all_uids, ['RFC822', 'INTERNALDATE'])
+                # Only fetch X-GM-LABELS for Gmail servers (it's a Gmail extension)
+                fetch_items = ['RFC822', 'INTERNALDATE', 'FLAGS']
+                if is_gmail:
+                    fetch_items.append('X-GM-LABELS')
+                fetch_results = server.fetch(all_uids, fetch_items)
                 
                 for uid in all_uids:
                     if uid not in fetch_results or b'RFC822' not in fetch_results[uid]:
                         continue
+                    
+                    # Skip drafts - check for \Draft flag
+                    flags = fetch_results[uid].get(b'FLAGS', ())
+                    if b'\\Draft' in flags:
+                        print(f"  Skipping draft message (uid: {uid})")
+                        continue
+                    
+                    # Also check Gmail labels for drafts (Gmail only)
+                    if is_gmail:
+                        gm_labels = fetch_results[uid].get(b'X-GM-LABELS', ())
+                        is_draft = any(
+                            label in (b'\\Draft', '\\Draft', b'\\\\Draft', '\\\\Draft')
+                            or (isinstance(label, (bytes, str)) and 'draft' in str(label).lower())
+                            for label in gm_labels
+                        )
+                        if is_draft:
+                            print(f"  Skipping draft message (uid: {uid}, labels: {gm_labels})")
+                            continue
                     
                     raw_message = fetch_results[uid][b'RFC822']
                     internal_date = fetch_results[uid].get(b'INTERNALDATE')
@@ -294,7 +519,7 @@ def format_conversation_to_markdown(messages, sender_email, output_file, my_emai
             f.write("---\n\n")
 
 def main():
-    imap_server, imap_port, username, password = prompt_imap_credentials()
+    auth_method, imap_server, imap_port, username, credential = prompt_imap_credentials()
     
     sender_email = input("Enter sender email address to search for: ").strip().lower()
     
@@ -302,42 +527,66 @@ def main():
     search_all = input("Search all folders? (y/n, default y): ").strip().lower()
     folders = None
     
-    with IMAPClient(imap_server, port=imap_port, ssl=True) as server:
-        server.login(username, password)
-        
-        if search_all != 'n':
-            print("Searching all folders...")
-        else:
-            folder_list = server.list_folders()
-            folder_names = [folder_name for flags, delimiter, folder_name in folder_list]
-            print("\nAvailable folders:")
-            for idx, name in enumerate(folder_names):
-                print(f"[{idx}] {name}")
-            selected = input("Enter comma-separated numbers of folders to search: ")
+    try:
+        with IMAPClient(imap_server, port=imap_port, ssl=True) as server:
             try:
-                indices = [int(i.strip()) for i in selected.split(',') if i.strip().isdigit()]
-                folders = [folder_names[i] for i in indices if 0 <= i < len(folder_names)]
-            except Exception:
-                print("Invalid input. Searching all folders.")
-                folders = None
+                if auth_method == 'oauth':
+                    server.oauth2_login(username, credential)
+                else:
+                    server.login(username, credential)
+            except LoginError as e:
+                print(f"Login failed: {e}")
+                if username.lower().endswith('@gmail.com'):
+                    print("\nGmail with 2-step verification requires an App Password for IMAP access.")
+                    print("Create one at https://myaccount.google.com/apppasswords")
+                    print("Or use OAuth (option 2) for a smoother experience.")
+                else:
+                    print("Please verify your username/password or check if IMAP access is enabled.")
+                return
+            except (socket.gaierror, socket.timeout, ConnectionError) as e:
+                print(f"Network error while connecting: {e}")
+                return
         
-        messages = search_emails_by_sender(server, sender_email, folders)
-        
-        if not messages:
-            print(f"\nNo messages found with sender: {sender_email}")
-            return
-        
-        print(f"\nFound {len(messages)} unique messages total (after deduplication).")
-        
-        # Generate output filename
-        safe_email = re.sub(r'[^\w\.-]', '_', sender_email)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_file = f"conversation_{safe_email}_{timestamp}.md"
-        
-        print(f"Generating markdown file: {output_file}")
-        format_conversation_to_markdown(messages, sender_email, output_file, username)
-        
-        print(f"\nConversation exported to: {output_file}")
+            if search_all != 'n':
+                print("Searching all folders...")
+            else:
+                folder_list = server.list_folders()
+                folder_names = [folder_name for flags, delimiter, folder_name in folder_list]
+                print("\nAvailable folders:")
+                for idx, name in enumerate(folder_names):
+                    print(f"[{idx}] {name}")
+                selected = input("Enter comma-separated numbers of folders to search: ")
+                try:
+                    indices = [int(i.strip()) for i in selected.split(',') if i.strip().isdigit()]
+                    folders = [folder_names[i] for i in indices if 0 <= i < len(folder_names)]
+                except Exception:
+                    print("Invalid input. Searching all folders.")
+                    folders = None
+            
+            # Detect if this is a Gmail server (for Gmail-specific features)
+            is_gmail = 'gmail' in imap_server.lower() or 'google' in imap_server.lower()
+            
+            messages = search_emails_by_sender(server, sender_email, folders, is_gmail=is_gmail)
+            
+            if not messages:
+                print(f"\nNo messages found with sender: {sender_email}")
+                return
+            
+            print(f"\nFound {len(messages)} unique messages total (after deduplication).")
+            
+            # Generate output filename
+            safe_email = re.sub(r'[^\w\.-]', '_', sender_email)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = f"conversation_{safe_email}_{timestamp}.md"
+            
+            print(f"Generating markdown file: {output_file}")
+            format_conversation_to_markdown(messages, sender_email, output_file, username)
+            
+            print(f"\nConversation exported to: {output_file}")
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
 
 if __name__ == "__main__":
     main()
