@@ -378,6 +378,55 @@ def get_text_from_email(msg):
     # Strip quoted/replied content to get only the new message
     return strip_quoted_text(full_text)
 
+
+def get_attachments_from_email(msg):
+    """Extract attachment info from email."""
+    attachments = []
+    
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_disposition = str(part.get("Content-Disposition", ""))
+            
+            if "attachment" in content_disposition:
+                filename = part.get_filename()
+                if filename:
+                    filename = decode_mime_header(filename)
+                    attachments.append({
+                        'filename': filename,
+                        'part': part
+                    })
+    
+    return attachments
+
+
+def save_attachments(msg, attachments_dir, msg_index):
+    """Save all attachments from an email to the specified directory."""
+    saved_files = []
+    attachments = get_attachments_from_email(msg)
+    
+    for att in attachments:
+        filename = att['filename']
+        part = att['part']
+        
+        # Sanitize filename
+        safe_filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        # Prefix with message index to avoid collisions
+        safe_filename = f"{msg_index:03d}_{safe_filename}"
+        
+        filepath = os.path.join(attachments_dir, safe_filename)
+        
+        try:
+            payload = part.get_payload(decode=True)
+            if payload:
+                with open(filepath, 'wb') as f:
+                    f.write(payload)
+                saved_files.append(safe_filename)
+                print(f"    Saved: {safe_filename}")
+        except Exception as e:
+            print(f"    Error saving {filename}: {e}")
+    
+    return saved_files
+
 def search_emails_by_sender(server, sender_email, folders=None, is_gmail=False):
     """Search for all emails from or to a specific sender across folders."""
     messages = {}  # Use dict to deduplicate by hash
@@ -466,16 +515,20 @@ def search_emails_by_sender(server, sender_email, folders=None, is_gmail=False):
     
     return list(messages.values())
 
-def format_conversation_to_markdown(messages, sender_email, output_file, my_email):
+def format_conversation_to_markdown(messages, sender_email, output_file, my_email, attachments_dir=None, download_attachments=False):
     """Format conversation messages into a markdown file."""
     # Sort messages by date (chronologically)
     messages.sort(key=lambda x: x['date'] if x['date'] else datetime.min)
+    
+    total_attachments = 0
     
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(f"# Email Conversation with {sender_email}\n\n")
         f.write(f"**Total Messages:** {len(messages)} (after deduplication)\n\n")
         f.write(f"**Your Email:** {my_email}\n\n")
         f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        if attachments_dir:
+            f.write(f"**Attachments Folder:** {attachments_dir}\n\n")
         f.write("---\n\n")
         
         for idx, msg_data in enumerate(messages, 1):
@@ -506,6 +559,21 @@ def format_conversation_to_markdown(messages, sender_email, output_file, my_emai
             f.write(f"**Subject:** {subject}\n\n")
             f.write(f"**Folder:** {msg_data['folder']}\n\n")
             
+            # Handle attachments
+            attachments = get_attachments_from_email(msg)
+            if attachments:
+                f.write(f"**Attachments:** {len(attachments)} file(s)\n\n")
+                if download_attachments and attachments_dir:
+                    print(f"  Saving {len(attachments)} attachment(s) from message {idx}...")
+                    saved = save_attachments(msg, attachments_dir, idx)
+                    total_attachments += len(saved)
+                    for filename in saved:
+                        f.write(f"  - [{filename}]({attachments_dir}/{filename})\n")
+                else:
+                    for att in attachments:
+                        f.write(f"  - {att['filename']}\n")
+                f.write("\n")
+            
             # Extract and write body
             body = get_text_from_email(msg)
             if body:
@@ -517,6 +585,9 @@ def format_conversation_to_markdown(messages, sender_email, output_file, my_emai
                 f.write("*(No text content)*\n\n")
             
             f.write("---\n\n")
+    
+    if download_attachments:
+        print(f"  Total attachments saved: {total_attachments}")
 
 def main():
     auth_method, imap_server, imap_port, username, credential = prompt_imap_credentials()
@@ -574,13 +645,25 @@ def main():
             
             print(f"\nFound {len(messages)} unique messages total (after deduplication).")
             
+            # Ask if user wants to download attachments
+            download_attachments = input("Download attachments? (y/n, default n): ").strip().lower() == 'y'
+            
             # Generate output filename
             safe_email = re.sub(r'[^\w\.-]', '_', sender_email)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             output_file = f"conversation_{safe_email}_{timestamp}.md"
             
+            # Create attachments directory if needed
+            attachments_dir = None
+            if download_attachments:
+                attachments_dir = f"conversation_{safe_email}_{timestamp}_attachments"
+                os.makedirs(attachments_dir, exist_ok=True)
+                print(f"Attachments will be saved to: {attachments_dir}")
+            
             print(f"Generating markdown file: {output_file}")
-            format_conversation_to_markdown(messages, sender_email, output_file, username)
+            format_conversation_to_markdown(messages, sender_email, output_file, username, 
+                                           attachments_dir=attachments_dir, 
+                                           download_attachments=download_attachments)
             
             print(f"\nConversation exported to: {output_file}")
     except Exception as e:

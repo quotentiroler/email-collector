@@ -31,10 +31,10 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Microsoft IMAP OAuth scopes
+# Microsoft IMAP/SMTP OAuth scopes - use outlook.office.com for personal accounts
 SCOPES = [
-    "https://outlook.office365.com/IMAP.AccessAsUser.All",
-    "offline_access",  # Required for refresh tokens
+    "https://outlook.office.com/IMAP.AccessAsUser.All",
+    "https://outlook.office.com/SMTP.Send",
 ]
 
 CLIENT_ID_ENV = "MICROSOFT_OAUTH_CLIENT_ID"
@@ -124,25 +124,17 @@ def _save_token_cache(cache, cache_path: Path):
 
 def _acquire_token_interactive(app, scopes: list[str], email: str):
     """Launch browser-based OAuth flow."""
-    # Use device code flow as fallback, but prefer interactive flow
-    flow = app.initiate_device_flow(scopes=scopes)
-    if "user_code" not in flow:
-        raise RuntimeError("Failed to create device flow for authentication.")
-
     print("\n" + "="*60)
     print("Microsoft OAuth Authentication")
     print("="*60)
-    print(flow["message"])
+    print("A browser window will open for you to sign in...")
     print("="*60 + "\n")
 
-    # Open browser automatically
-    if "verification_uri" in flow:
-        try:
-            webbrowser.open(flow["verification_uri"])
-        except Exception:
-            pass
-
-    result = app.acquire_token_by_device_flow(flow)
+    # Use interactive browser flow
+    result = app.acquire_token_interactive(
+        scopes=scopes,
+        login_hint=email,
+    )
     return result
 
 
