@@ -18,7 +18,7 @@ dependencies = [
   "PyPDF2>=3.0.0",
   "openai>=2.2.0",
   "anthropic>=0.69.0",
-  "markitdown>=0.0.2"
+  "fastmcp>=3.0.0"
 ]
 
 [project.scripts]
