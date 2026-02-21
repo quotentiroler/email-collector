@@ -11,8 +11,10 @@ Automate the boring parts of expensing: this toolkit signs into your mailbox, fe
 | `pdf_amount_scraper.py` | Revisits rows where the amount is missing but a PDF exists and asks the AI to read the invoice. |
 | `email_backup.py` | Bulk-export raw `.eml` files from selected folders. |
 | `retrieve_conversation.py` | Pull an entire thread for a specific sender and save it as markdown. |
+| `mcp_email_server.py` | [MCP](https://modelcontextprotocol.io/) server exposing email tools for AI assistants (search, read, send, retrieve conversations, read PDFs). |
+| `merge_conversations.py` | Merge multiple conversation markdown exports into a single deduplicated, chronological file. |
 
-The heavy lifting lives in `ai_expense_analyzer.py`, which supports Anthropic Claude and OpenAI models, and `oauth_client.py` for Gmail OAuth flows.
+The heavy lifting lives in `ai_expense_analyzer.py`, which supports Anthropic Claude and OpenAI models, and `oauth_client.py` / `oauth_microsoft.py` for Gmail and Microsoft OAuth flows.
 
 ## 🚀 Quickstart
 
@@ -98,6 +100,31 @@ It scans the latest CSV, finds rows with `amount == 0` and PDF attachments, asks
 
 - `uv run python email_backup.py` exports whole folders to `mail_export/`.
 - `uv run python retrieve_conversation.py` fetches all messages to/from a contact and writes `conversation_<email>.md`.
+- `uv run python merge_conversations.py <file1> <file2> ...` merges multiple conversation exports into one deduplicated file.
+
+### MCP email server
+
+The MCP server lets AI assistants (e.g. GitHub Copilot, Claude Desktop) interact with your mailbox directly. Start it with:
+
+```powershell
+uv run python mcp_email_server.py
+```
+
+Or configure it in your editor's MCP settings. Exposed tools:
+
+| Tool | Description |
+| --- | --- |
+| `list_folders` | List all IMAP mailbox folders |
+| `search_emails` | Search emails by sender, subject, date range, folder |
+| `get_email_by_uid` | Read a specific email by UID |
+| `retrieve_conversation` | Export full conversation with a contact as markdown |
+| `list_conversation_attachments` | List attachments from a saved conversation |
+| `download_email_attachment` | Download a specific attachment from an email |
+| `read_email_attachment_pdf` | Read PDF attachment content directly from an email |
+| `read_pdf` | Extract text from a local PDF file |
+| `convert_pdf_to_markdown` | Convert a PDF to markdown |
+| `send_email` | Send an email via SMTP with OAuth |
+| `draft_reply` | Draft a reply to an existing email |
 
 ## 🔐 Authentication options
 
