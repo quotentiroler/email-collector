@@ -122,18 +122,20 @@ def list_folders() -> list[str]:
 def search_emails(
     query: str,
     folder: str = "INBOX",
-    limit: int = 20
+    limit: int = 20,
+    search_all_folders: bool = False
 ) -> list[dict]:
     """
-    Search emails in a folder.
+    Search emails in a folder or across all folders.
     
     Args:
         query: Search term (searches in FROM, SUBJECT, and BODY)
-        folder: Folder to search in (default: INBOX)
+        folder: Folder to search in (default: INBOX, ignored if search_all_folders=True)
         limit: Maximum number of results to return
+        search_all_folders: If True, search across all mailbox folders (including Junk/Spam)
         
     Returns:
-        List of matching emails with basic info (subject, from, date)
+        List of matching emails with basic info (subject, from, date, folder)
     """
     from email import message_from_bytes
     from email.header import decode_header
@@ -151,42 +153,58 @@ def search_emails(
         return ''.join(result)
     
     results = []
+    skip_folders = {'Drafts', 'Trash', 'Deleted', 'Outbox'}
     
     with get_imap_connection() as server:
-        server.select_folder(folder, readonly=True)
+        if search_all_folders:
+            folder_list = server.list_folders()
+            folders_to_search = [
+                folder_name for flags, delimiter, folder_name in folder_list
+                if folder_name not in skip_folders and 'draft' not in folder_name.lower()
+            ]
+        else:
+            folders_to_search = [folder]
         
-        # Search in subject and from
-        from_results = server.search(['FROM', query])
-        subject_results = server.search(['SUBJECT', query])
-        
-        # Combine and deduplicate
-        all_uids = list(set(from_results + subject_results))[:limit]
-        
-        if all_uids:
-            fetch_results = server.fetch(all_uids, ['RFC822', 'INTERNALDATE'])
-            
-            for uid in all_uids:
-                if uid not in fetch_results or b'RFC822' not in fetch_results[uid]:
-                    continue
+        for search_folder in folders_to_search:
+            try:
+                server.select_folder(search_folder, readonly=True)
                 
-                raw_msg = fetch_results[uid][b'RFC822']
-                msg = message_from_bytes(raw_msg)
+                # Search in subject and from
+                from_results = server.search(['FROM', query])
+                subject_results = server.search(['SUBJECT', query])
                 
-                try:
-                    date = parsedate_to_datetime(msg.get('Date', ''))
-                    date_str = date.strftime('%Y-%m-%d %H:%M')
-                except:
-                    date_str = msg.get('Date', 'Unknown')
+                # Combine and deduplicate
+                folder_uids = list(set(from_results + subject_results))
                 
-                results.append({
-                    "uid": uid,
-                    "subject": decode_mime_header(msg.get('Subject', '(No Subject)')),
-                    "from": decode_mime_header(msg.get('From', '')),
-                    "date": date_str,
-                    "folder": folder
-                })
+                if folder_uids:
+                    fetch_results = server.fetch(folder_uids, ['RFC822', 'INTERNALDATE'])
+                    
+                    for uid in folder_uids:
+                        if uid not in fetch_results or b'RFC822' not in fetch_results[uid]:
+                            continue
+                        
+                        raw_msg = fetch_results[uid][b'RFC822']
+                        msg = message_from_bytes(raw_msg)
+                        
+                        try:
+                            date = parsedate_to_datetime(msg.get('Date', ''))
+                            date_str = date.strftime('%Y-%m-%d %H:%M')
+                        except:
+                            date_str = msg.get('Date', 'Unknown')
+                        
+                        results.append({
+                            "uid": uid,
+                            "subject": decode_mime_header(msg.get('Subject', '(No Subject)')),
+                            "from": decode_mime_header(msg.get('From', '')),
+                            "date": date_str,
+                            "folder": search_folder
+                        })
+            except Exception:
+                continue
     
-    return results
+    # Sort by date descending and limit
+    results.sort(key=lambda x: x['date'], reverse=True)
+    return results[:limit]
 
 
 @mcp.tool
@@ -299,7 +317,7 @@ def retrieve_conversation(
     sender_email = sender_email.lower().strip()
     messages = {}
     
-    skip_folders = {'Drafts', 'Junk', 'Trash', 'Deleted', 'Spam', 'Outbox'}
+    skip_folders = {'Drafts', 'Trash', 'Deleted', 'Outbox'}
     
     with get_imap_connection() as server:
         folder_list = server.list_folders()
